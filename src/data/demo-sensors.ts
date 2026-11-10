@@ -1,3 +1,4 @@
+import { SOIL_RAW_LABEL } from "@/services/device-readings";
 // Demo sensor data. Replace `fetchReadings` with the real device integration later.
 export type ReadingStatus = "ok" | "uncalibrated" | "missing";
 
@@ -49,6 +50,7 @@ const KEY_BY_LABEL: Record<string, Reading["key"]> = {
   "حرارة الجو": "temperature",
   "رطوبة الجو": "humidity",
   "رطوبة التربة": "soil",
+  [SOIL_RAW_LABEL]: "soil",
   "شدة الإضاءة": "light",
   "الأشعة فوق البنفسجية": "uv",
 };
@@ -71,12 +73,23 @@ export function snapshotFromSensors(
     connection: "connected",
     simulated: false,
     updatedAt: Math.max(...rows.map((r) => Date.parse(r.recordedAt))),
-    readings: rows.map((r) => ({
-      key: KEY_BY_LABEL[r.label]!,
-      label: r.label,
-      value: r.value,
-      unit: r.unit,
-      status: "ok" as const,
-    })),
+    readings: rows.map((r) =>
+      r.label === SOIL_RAW_LABEL
+        ? {
+            key: "soil" as const,
+            label: "رطوبة التربة",
+            value: r.value,
+            unit: "raw",
+            status: "uncalibrated" as const,
+            note: "قراءة خام، تحتاج معايرة",
+          }
+        : {
+            key: KEY_BY_LABEL[r.label]!,
+            label: r.label,
+            value: r.value,
+            unit: r.unit,
+            status: "ok" as const,
+          },
+    ),
   };
 }

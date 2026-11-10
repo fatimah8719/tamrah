@@ -11,10 +11,17 @@
  *   users/{uid}/interventions/{id}       palmId, sampleId, at, label
  *   users/{uid}/actions/{id}             at
  *   users/{uid}/recommendations/{id}     advice shown on the home screen
+ *   readings/latest                      written by the team's sensor device (read only here)
  */
 import type { Advice } from "@/ai/advice";
 import { RULES, RULES_VERSION } from "@/ai/advice";
 import { firebaseAuth, firebaseDb } from "@/lib/firebase";
+import {
+  HISTORY_EVERY_MS,
+  recordedAt,
+  toSensorReadings,
+  type DeviceLatest,
+} from "@/services/device-readings";
 import {
   clearDemo,
   loadDemo,
@@ -94,7 +101,9 @@ export function diffToCloud(prev: DemoState, next: DemoState): Record<string, un
       out[`${path}/${dbKey(x.id)}`] = clean(map(x));
     }
   };
-  each("sensorReadings", prev.sensors, next.sensors, ({ id, ...s }) => s);
+  // "live-*" readings mirror the device's /readings/latest on screen only; history copies are stored.
+  const stored = (l: SensorReading[] | undefined) => (l ?? []).filter((x) => !x.id.startsWith("live-"));
+  each("sensorReadings", stored(prev.sensors), stored(next.sensors), ({ id, ...s }) => s);
   each("analyses", prev.analyses, next.analyses, ({ id, ...a }) => a);
   each("interventions", prev.interventions, next.interventions, ({ id, ...i }) => i);
   each("actions", prev.actions, next.actions, ({ at }) => ({ at }));
@@ -102,6 +111,36 @@ export function diffToCloud(prev: DemoState, next: DemoState): Record<string, un
     url.startsWith("data:") ? { ...img, thumbnail: url } : { ...img, storagePath: url },
   );
   return out;
+}
+
+/**
+ * New values from the team's device (/readings/latest) for the signed-in user's palm.
+ * The screen always shows the latest values; a history copy is saved every HISTORY_EVERY_MS
+ * so the advice engine can compare readings over time.
+ */
+export function applyDeviceLatest(latest: DeviceLatest | null): boolean {
+  const d = loadDemo();
+  if (d.mode !== "cloud" || !d.palm || !d.device || !latest) return false;
+  const at = recordedAt(latest);
+  if (!at) return false;
+  const device = d.device;
+  const live = toSensorReadings(latest, device.id, d.palm.id, "live");
+  const lastStored = Math.max(
+    0,
+    ...d.sensors
+      .filter((s) => s.deviceId === device.id && !s.id.startsWith("live-"))
+      .map((s) => Date.parse(s.recordedAt)),
+  );
+  const store = Date.parse(at) - lastStored >= HISTORY_EVERY_MS;
+  const history = store ? toSensorReadings(latest, device.id, d.palm.id, `dev-${Date.parse(at)}`) : [];
+  saveDemo(
+    {
+      sensors: [...d.sensors.filter((s) => !s.id.startsWith("live-")), ...live, ...history],
+      device: { ...device, lastSeen: at },
+    },
+    { silent: !store },
+  );
+  return true;
 }
 
 let stopSync: (() => void) | null = null;
@@ -125,14 +164,36 @@ async function startSync(uid: string) {
     (snap) => {
       const cur = loadDemo();
       if (cur.mode !== "cloud" || cur.uid !== uid) return;
-      saveDemo(fromCloud(snap.val() as Tree | null), { silent: true });
+      const cloud = fromCloud(snap.val() as Tree | null);
+      const live = cur.sensors.filter((x) => x.id.startsWith("live-"));
+      const seen = [cloud.device?.lastSeen, cur.device?.lastSeen].filter(Boolean) as string[];
+      saveDemo(
+        {
+          ...cloud,
+          sensors: [...(cloud.sensors ?? []).filter((x) => !x.id.startsWith("live-")), ...live],
+          device: cloud.device
+            ? { ...cloud.device, lastSeen: seen.sort().at(-1) ?? null }
+            : null,
+        },
+        { silent: true },
+      );
       window.dispatchEvent(new Event(SYNC_EVENT));
     },
     (e) => console.error("Firebase read failed", e),
   );
+  // The team's sensor device publishes its latest values here.
+  const offDevice = onValue(
+    ref(db, "readings/latest"),
+    (snap) => {
+      if (applyDeviceLatest(snap.val() as DeviceLatest | null))
+        window.dispatchEvent(new Event(SYNC_EVENT));
+    },
+    (e) => console.error("Device readings unavailable", e),
+  );
   stopSync = () => {
     offSave();
     offValue();
+    offDevice();
     syncingUid = null;
   };
 }
