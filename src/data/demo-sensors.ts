@@ -44,3 +44,39 @@ export function formatReading(r: Reading) {
   if (r.value === null) return "—";
   return `${r.value.toLocaleString("en-US")}${r.unit === "%" ? "%" : " " + r.unit}`;
 }
+
+const KEY_BY_LABEL: Record<string, Reading["key"]> = {
+  "حرارة الجو": "temperature",
+  "رطوبة الجو": "humidity",
+  "رطوبة التربة": "soil",
+  "شدة الإضاءة": "light",
+  "الأشعة فوق البنفسجية": "uv",
+};
+
+/** Latest value of each sensor for the palm, from the stored readings (preview or Firebase). */
+export function snapshotFromSensors(
+  sensors: { label: string; value: number; unit: string; recordedAt: string; palmId: string }[],
+  palmId: string,
+): SensorSnapshot | null {
+  const latest = new Map<string, (typeof sensors)[number]>();
+  for (const s of sensors) {
+    if (s.palmId !== palmId || !KEY_BY_LABEL[s.label]) continue;
+    const cur = latest.get(s.label);
+    if (!cur || Date.parse(s.recordedAt) > Date.parse(cur.recordedAt)) latest.set(s.label, s);
+  }
+  if (!latest.size) return null;
+  const order = Object.keys(KEY_BY_LABEL);
+  const rows = [...latest.values()].sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label));
+  return {
+    connection: "connected",
+    simulated: false,
+    updatedAt: Math.max(...rows.map((r) => Date.parse(r.recordedAt))),
+    readings: rows.map((r) => ({
+      key: KEY_BY_LABEL[r.label]!,
+      label: r.label,
+      value: r.value,
+      unit: r.unit,
+      status: "ok" as const,
+    })),
+  };
+}

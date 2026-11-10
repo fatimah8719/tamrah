@@ -1,4 +1,4 @@
-﻿export const VARIETIES = ["خلاص", "سكري", "صقعي", "برحي", "عجوة", "رزيز"];
+export const VARIETIES = ["خلاص", "سكري", "صقعي", "برحي", "عجوة", "رزيز"];
 export interface PalmSetup {
   id: string;
   name: string;
@@ -55,6 +55,9 @@ export interface Intervention {
 }
 export interface DemoState {
   active: boolean;
+  /** "cloud" = signed in with Firebase (data synced to Realtime Database); otherwise local preview. */
+  mode?: "demo" | "cloud";
+  uid?: string;
   palm: PalmSetup | null;
   device: Device | null;
   images: Capture[];
@@ -81,9 +84,19 @@ export function loadDemo(): DemoState {
     return empty();
   }
 }
-export function saveDemo(patch: Partial<DemoState>) {
-  const next = { ...loadDemo(), ...patch };
+type SaveListener = (prev: DemoState, next: DemoState) => void;
+const listeners = new Set<SaveListener>();
+/** Called after every saveDemo (used to mirror changes to Firebase). Returns an unsubscribe. */
+export function onSaveDemo(fn: SaveListener) {
+  listeners.add(fn);
+  return () => void listeners.delete(fn);
+}
+export const SYNC_EVENT = "tamra-sync";
+export function saveDemo(patch: Partial<DemoState>, opts: { silent?: boolean } = {}) {
+  const prev = loadDemo();
+  const next = { ...prev, ...patch };
   localStorage.setItem(KEY, JSON.stringify(next));
+  if (!opts.silent) listeners.forEach((fn) => fn(prev, next));
   return next;
 }
 export function clearDemo() {

@@ -1,4 +1,4 @@
-﻿import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import {
   LineChart,
@@ -17,14 +17,33 @@ import {
   saveDemo,
   connected,
   comparable,
+  SYNC_EVENT,
   type DemoState,
   type Analysis,
   type Capture,
 } from "@/lib/demo-store";
-import { analysisLabels, demoModelConfig } from "@/services/analysis";
-import { simulateAnalysis } from "@/services/demo-analysis";
+import { analysisLabels, modelConfig, validateResult } from "@/services/analysis";
 import { preparePreview } from "@/services/presentation-preview";
+import { exitApp, resumeCloud } from "@/services/cloud";
+import {
+  analyzeImage,
+  PROGRESS_MEASUREMENT,
+  thumbnailDataUrl,
+  UnsuitableImage,
+} from "@/ai/ripeness";
 export const Route = createFileRoute("/tracking")({ component: Home });
+const MEASUREMENT_LABEL: Record<string, string> = {
+  stage: "المرحلة المقدّرة",
+  "ripe-fruit-share-v1": "نسبة الثمار الناضجة",
+  [PROGRESS_MEASUREMENT]: "تقدّم النضج",
+};
+/** "· 66.7٪ تقدّم النضج" or "· 80٪ ثمار ناضجة" depending on what the percentage measures. */
+export const percentText = (a: Analysis) =>
+  a.ripePercent === undefined
+    ? ""
+    : a.measurement === PROGRESS_MEASUREMENT
+      ? `${a.ripePercent}٪ تقدّم النضج`
+      : `${a.ripePercent}٪ ثمار ناضجة`;
 const date = (s: string) =>
   new Date(s).toLocaleString("ar-SA", { dateStyle: "medium", timeStyle: "short" });
 export function Progress({ data, onSelect }: { data: DemoState; onSelect: (a: Analysis) => void }) {
@@ -62,11 +81,7 @@ export function Progress({ data, onSelect }: { data: DemoState; onSelect: (a: An
           >
             {measurements.map((m) => (
               <option key={m} value={m}>
-                {m === "stage"
-                  ? "المرحلة المقدّرة"
-                  : m === "ripe-fruit-share-v1"
-                    ? "نسبة الثمار الناضجة"
-                    : m}
+                {MEASUREMENT_LABEL[m] ?? m}
               </option>
             ))}
           </select>
@@ -79,7 +94,12 @@ export function Progress({ data, onSelect }: { data: DemoState; onSelect: (a: An
           {rows.length === 1 && <p>هذه نقطة البداية، أضيفي قراءة أخرى لمتابعة التغيّر</p>}
           {numeric ? (
             <>
-              <p className="text-sm">نسبة الثمار الناضجة (٪) · اختاري قراءة من السجل لعرض صورتها</p>
+              <p className="text-sm">
+                {measurement === PROGRESS_MEASUREMENT
+                  ? "تقدّم النضج (٪): 0 كمري · 33 خلال · 67 رطب · 100 تمر"
+                  : "نسبة الثمار الناضجة (٪)"}{" "}
+                · اختاري قراءة من السجل لعرض صورتها
+              </p>
               <div dir="ltr" className="mt-4 h-64 w-full min-w-0">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart
@@ -97,7 +117,7 @@ export function Progress({ data, onSelect }: { data: DemoState; onSelect: (a: An
                     <Line
                       type="linear"
                       dataKey="ripePercent"
-                      name="الثمار الناضجة"
+                      name={MEASUREMENT_LABEL[measurement] ?? "النسبة"}
                       stroke="var(--primary)"
                       strokeWidth={3}
                       isAnimationActive={false}
@@ -161,28 +181,34 @@ function Home() {
   const [selected, setSelected] = useState<Analysis | null>(null);
   const [image, setImage] = useState<Capture | null>(null);
   const [capturedAt, setCapturedAt] = useState("");
-  const [kind, setKind] = useState("ripe-fruit-share-v1");
+  const [kind, setKind] = useState(PROGRESS_MEASUREMENT);
   const [status, setStatus] = useState<Analysis["status"]>("not_started");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    const d = preparePreview();
-    if (!d.active) {
-      void navigate({ to: "/" });
-      return;
-    }
-    if (!d.palm) {
-      void navigate({ to: "/connect" });
-      return;
-    }
-    setData(d);
-    setNow(Date.now());
-    const timer = setInterval(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const onSync = () => setData(loadDemo());
+    void resumeCloud().then((ok) => {
+      if (!alive) return;
+      if (!ok) return void navigate({ to: "/" });
+      const d = preparePreview();
+      if (!d.active) return void navigate({ to: "/" });
+      if (!d.palm) return void navigate({ to: "/connect" });
+      setData(d);
       setNow(Date.now());
-      setData(preparePreview());
-    }, 30000);
-    return () => clearInterval(timer);
+      window.addEventListener(SYNC_EVENT, onSync);
+      timer = setInterval(() => {
+        setNow(Date.now());
+        setData(preparePreview());
+      }, 30000);
+    });
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      window.removeEventListener(SYNC_EVENT, onSync);
+    };
   }, [navigate]);
   function persist(patch: Partial<DemoState>) {
     try {
@@ -240,20 +266,40 @@ function Home() {
     }
     setBusy(true);
     setStatus("processing");
-    const count = data.analyses.filter(
-      (a) => a.sampleId === data.palm!.sampleId && a.measurement === kind,
-    ).length;
     let a: Analysis;
+    let url = image.url;
     try {
-      a = await simulateAnalysis({ ...image, capturedAt: at }, kind, count);
-    } catch {
-      setStatus("failed");
-      setMessage("تعذّر التحليل. يمكنك إعادة المحاولة.");
+      // Trained ripeness model (src/ai/ripeness.ts), running in the browser.
+      const r = await analyzeImage(image.url);
+      if (url.startsWith("data:")) url = await thumbnailDataUrl(url, 480);
+      a = validateResult({
+        id: crypto.randomUUID(),
+        imageId: image.id,
+        palmId: image.palmId,
+        sampleId: image.sampleId,
+        variety: image.variety,
+        capturedAt: at,
+        analyzedAt: new Date().toISOString(),
+        status: "completed",
+        stage: r.stageAr,
+        ...(kind === "stage" ? {} : { ripePercent: r.ripePercent }),
+        confidence: r.confidence,
+        modelVersion: r.modelVersion,
+        measurement: kind === "stage" ? "stage" : PROGRESS_MEASUREMENT,
+      });
+    } catch (e) {
+      const unsuitable = e instanceof UnsuitableImage;
+      setStatus(unsuitable ? "unsuitable" : "failed");
+      setMessage(
+        unsuitable
+          ? "ما ظهرت ثمار كافية في الصورة. صوّري العذق عن قرب."
+          : "تعذّر التحليل. يمكنك إعادة المحاولة.",
+      );
       setBusy(false);
       return;
     }
     const saved = persist({
-      images: [...data.images, { ...image, capturedAt: at }],
+      images: [...data.images, { ...image, url, capturedAt: at }],
       analyses: [...data.analyses, a],
     });
     setStatus(saved ? "completed" : "failed");
@@ -265,7 +311,7 @@ function Home() {
   }
   if (!data?.palm) return null;
   const palm = data.palm;
-  const supported = demoModelConfig.supportedVarieties.includes(palm.variety);
+  const supported = modelConfig.supportedVarieties.includes(palm.variety);
   const history = data.analyses
     .filter(
       (a) => a.palmId === palm.id && a.sampleId === palm.sampleId && a.variety === palm.variety,
@@ -297,8 +343,7 @@ function Home() {
           <Button
             variant="ghost"
             onClick={() => {
-              saveDemo({ active: false });
-              void navigate({ to: "/" });
+              void exitApp().then(() => navigate({ to: "/" }));
             }}
           >
             تسجيل الخروج
@@ -312,7 +357,7 @@ function Home() {
               {last?.stage || "لا توجد مرحلة مقدّرة بعد"}
             </p>
             <p>{last ? date(last.analyzedAt) : "لم يبدأ التحليل"}</p>
-            {last?.ripePercent !== undefined && <p>الثمار الناضجة: {last.ripePercent}٪</p>}
+            {last?.ripePercent !== undefined && <p>{percentText(last)}</p>}
             <a href="#new-analysis" className="mt-4 inline-block font-bold text-primary">
               إضافة تحليل جديد ←
             </a>
@@ -393,7 +438,7 @@ function Home() {
                 <p>التحليل: {shown && date(shown.analyzedAt)}</p>
                 <p>
                   النتيجة: {shown?.stage}{" "}
-                  {shown?.ripePercent !== undefined && "· " + shown.ripePercent + "٪ ثمار ناضجة"}
+                  {shown && shown.ripePercent !== undefined && "· " + percentText(shown)}
                 </p>
                 <p>
                   ثقة المودل:{" "}
@@ -460,7 +505,7 @@ function Home() {
               onChange={(e) => setKind(e.target.value)}
             >
               <option value="stage">مرحلة فقط</option>
-              <option value="ripe-fruit-share-v1">نسبة الثمار الناضجة</option>
+              <option value={PROGRESS_MEASUREMENT}>نسبة تقدّم النضج</option>
             </select>
           </label>
           <p role="status">{analysisLabels[status]}</p>

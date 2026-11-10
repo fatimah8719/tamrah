@@ -1,4 +1,4 @@
-﻿import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { ArrowRight, Info, QrCode } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { AppHeader, DemoBadge } from "@/components/tamra/Brand";
 import { PalmForm } from "@/components/tamra/PalmForm";
 import { loadDemo, saveDemo, type PalmSetup } from "@/lib/demo-store";
-import { demoModelConfig } from "@/services/analysis";
+import { modelConfig } from "@/services/analysis";
+import { dbKey, resumeCloud } from "@/services/cloud";
 
 export const Route = createFileRoute("/connect")({
   head: () => ({
@@ -36,15 +37,17 @@ export function Connect() {
     sampleId: "العذق الأول",
   });
   useEffect(() => {
-    const d = loadDemo();
-    if (!d.active) {
-      void navigate({ to: "/" });
-      return;
-    }
-    if (d.palm) {
-      setPalm(d.palm);
-      setPaired(!!d.device);
-    }
+    void resumeCloud().then((ok) => {
+      const d = loadDemo();
+      if (!ok || !d.active) {
+        void navigate({ to: "/" });
+        return;
+      }
+      if (d.palm) {
+        setPalm(d.palm);
+        setPaired(!!d.device);
+      }
+    });
   }, [navigate]);
   function pair(e: FormEvent) {
     e.preventDefault();
@@ -62,9 +65,13 @@ export function Connect() {
     };
     const d = loadDemo(),
       now = new Date().toISOString();
+    // The pairing code becomes the device id. Real ownership checks need a trusted service.
+    const deviceId = code.trim() ? dbKey(code.trim().toUpperCase()) : "demo-device";
     saveDemo({
       palm: saved,
-      device: d.device || { id: "demo-device", palmId: saved.id, linkedAt: now, lastSeen: now },
+      device: d.device
+        ? { ...d.device, palmId: saved.id }
+        : { id: deviceId, palmId: saved.id, linkedAt: now, lastSeen: now },
     });
     void navigate({ to: "/home" });
   }
@@ -142,7 +149,7 @@ export function Connect() {
                 onChange={(e) => setPalm({ ...palm, sampleId: e.target.value })}
               />
             </div>
-            {!demoModelConfig.supportedVarieties.includes(palm.variety) && (
+            {!modelConfig.supportedVarieties.includes(palm.variety) && (
               <p className="mt-3 rounded-2xl bg-amber p-4 text-sm text-amber-foreground">
                 تحليل النضج غير متاح لهذا الصنف حاليًا. يمكنك حفظ النخلة وعرض الحساسات.
               </p>

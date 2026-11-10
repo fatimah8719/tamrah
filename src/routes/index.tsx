@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { PalmIllustration } from "@/components/tamra/PalmIllustration";
 import { DemoBadge } from "@/components/tamra/Brand";
 import { startPreview } from "@/services/presentation-preview";
+import { authMessage, signInCloud } from "@/services/cloud";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -28,13 +29,25 @@ export function SignIn() {
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  function onSubmit(e: FormEvent) {
+  async function onSubmit(e: FormEvent) {
     e.preventDefault();
     if (!/^\S+@\S+\.\S+$/.test(email)) return setError("اكتب بريدًا إلكترونيًا صحيحًا.");
     if (!password) return setError("اكتب كلمة المرور.");
-    setPassword("");
-    startDemo();
+    setError(null);
+    setBusy(true);
+    try {
+      // Firebase Auth; the user's palm, readings and analyses then sync with Realtime Database.
+      const s = await signInCloud(email.trim(), password, creating);
+      setPassword("");
+      void navigate({ to: s.palm ? "/home" : "/connect" });
+    } catch (err) {
+      setError(authMessage(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   function startDemo() {
@@ -90,9 +103,24 @@ export function SignIn() {
             {error}
           </p>
         )}
-        <Button type="submit" variant="outline" className="h-12 w-full text-base">
-          دخول
+        <Button
+          type="submit"
+          variant="outline"
+          className="h-12 w-full text-base"
+          disabled={busy}
+        >
+          {busy ? "لحظة…" : creating ? "إنشاء حساب" : "دخول"}
         </Button>
+        <button
+          type="button"
+          onClick={() => {
+            setCreating(!creating);
+            setError(null);
+          }}
+          className="w-full text-center text-sm font-semibold text-primary"
+        >
+          {creating ? "عندي حساب، أبي أسجّل دخول" : "ما عندك حساب؟ أنشئ حساب"}
+        </button>
       </form>
 
       <Button onClick={startDemo} className="mt-3 h-14 w-full rounded-2xl text-lg font-bold">

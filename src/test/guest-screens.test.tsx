@@ -1,4 +1,4 @@
-﻿import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -14,15 +14,16 @@ beforeEach(() => {
   navigate.mockClear();
 });
 describe("Presentation preview screens", () => {
-  it("opens a populated preview without credentials and preserves variety editing", () => {
+  it("opens a populated preview without credentials and preserves variety editing", async () => {
     const login = render(<SignIn />);
     fireEvent.click(screen.getByRole("button", { name: "تجربة تمرة" }));
     expect(navigate).toHaveBeenLastCalledWith({ to: "/home" });
     expect(loadDemo().analyses).toHaveLength(4);
-    expect(loadDemo().sensors).toHaveLength(5);
+    // Five current readings plus the temperature an hour earlier (for the advice engine).
+    expect(loadDemo().sensors).toHaveLength(6);
     login.unmount();
     const setup = render(<Connect />);
-    expect(screen.getByText("أضيفي نخلتك")).toBeTruthy();
+    expect(await screen.findByText("أضيفي نخلتك")).toBeTruthy();
     expect(screen.queryByText("مرحلة النمو")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "عجوة" }));
     fireEvent.click(screen.getByRole("button", { name: "ابدأ المتابعة" }));

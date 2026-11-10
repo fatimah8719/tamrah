@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   Analysis,
   Capture,
   Device,
@@ -24,7 +24,11 @@ export interface IntegrationAdapter {
   subscribe(uid: string, onChange: () => void): () => void;
 }
 export const integration: IntegrationAdapter | null = null;
-export const modelConfig = { supportedVarieties: [] as string[] };
+/**
+ * Varieties the trained ripeness model (public/models/ripeness.json) has seen in training.
+ * Its training photos: Barhi, Khalas, Meneifi, Naboot Saif, Sullaj.
+ */
+export const modelConfig = { supportedVarieties: ["خلاص", "برحي"] as string[] };
 export const demoModelConfig = {
   supportedVarieties: ["خلاص", "سكري", "صقعي", "برحي", "عجوة", "رزيز"],
 };

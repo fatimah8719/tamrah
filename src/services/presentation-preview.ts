@@ -1,10 +1,10 @@
-﻿import { loadDemo, saveDemo, type Analysis, type Capture } from "@/lib/demo-store";
+import { loadDemo, saveDemo, type Analysis, type Capture } from "@/lib/demo-store";
 
 // Presentation-only fixtures. This service never claims devices or calls production APIs.
 export const PRESENTATION_PREVIEW = true;
 export function preparePreview() {
   const d = loadDemo();
-  if (!PRESENTATION_PREVIEW || !d.palm) return d;
+  if (!PRESENTATION_PREVIEW || !d.palm || d.mode === "cloud") return d;
   const palm = d.palm;
   const now = Date.now(),
     timestamp = new Date(now).toISOString();
@@ -53,18 +53,20 @@ export function preparePreview() {
         measurement: "ripe-fruit-share-v1",
       });
     });
+  // An earlier reading lets the advice engine compare (32.8° an hour ago -> 35.2° now).
+  const hourAgo = new Date(now - 60 * 60000).toISOString();
   const sensors = [
-    { label: "حرارة الجو", value: 35.2, unit: "°C" },
-    { label: "رطوبة الجو", value: 42, unit: "%" },
-    { label: "رطوبة التربة", value: 36, unit: "%" },
-    { label: "شدة الإضاءة", value: 24600, unit: "lux" },
-    { label: "الأشعة فوق البنفسجية", value: 4.2, unit: "UV index" },
+    { label: "حرارة الجو", value: 35.2, unit: "°C", recordedAt: timestamp },
+    { label: "رطوبة الجو", value: 42, unit: "%", recordedAt: timestamp },
+    { label: "رطوبة التربة", value: 36, unit: "%", recordedAt: timestamp },
+    { label: "شدة الإضاءة", value: 24600, unit: "lux", recordedAt: timestamp },
+    { label: "الأشعة فوق البنفسجية", value: 4.2, unit: "UV index", recordedAt: timestamp },
+    { label: "حرارة الجو", value: 32.8, unit: "°C", recordedAt: hourAgo },
   ].map((s, index) => ({
     ...s,
     id: prefix + "-sensor-" + index,
     deviceId: device.id,
     palmId: palm.id,
-    recordedAt: timestamp,
   }));
   return saveDemo({
     device: { ...device, lastSeen: timestamp },
@@ -77,6 +79,7 @@ export function startPreview() {
   const d = loadDemo();
   saveDemo({
     active: true,
+    mode: "demo",
     palm: d.palm || { id: "preview-palm", name: "نخلتي", variety: "خلاص", sampleId: "العذق الأول" },
   });
   return preparePreview();

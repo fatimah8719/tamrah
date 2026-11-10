@@ -1,6 +1,11 @@
-﻿import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { loadDemo } from "@/lib/demo-store";
 
+/** "معاينة" badge for the local preview; hidden once signed in with Firebase. */
 export function DemoBadge({ label = "معاينة" }: { label?: string }) {
+  const [cloud, setCloud] = useState(false);
+  useEffect(() => setCloud(loadDemo().mode === "cloud"), []);
+  if (cloud) return null;
   return (
     <span className="inline-flex items-center rounded-full bg-amber px-3 py-1 text-xs font-semibold text-amber-foreground">
       {label}

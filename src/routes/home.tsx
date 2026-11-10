@@ -15,14 +15,22 @@ import { AppHeader, DemoBadge } from "@/components/tamra/Brand";
 import { PalmIllustration } from "@/components/tamra/PalmIllustration";
 import { PalmForm } from "@/components/tamra/PalmForm";
 import {
-  fetchReadings,
   formatReading,
   isStale,
+  snapshotFromSensors,
   type Reading,
   type SensorSnapshot,
 } from "@/data/demo-sensors";
 import { getObservation, getRecommendation } from "@/services/demo-recommendations";
-import { connected, loadDemo, saveDemo, type DemoState, type PalmSetup } from "@/lib/demo-store";
+import {
+  connected,
+  loadDemo,
+  saveDemo,
+  SYNC_EVENT,
+  type DemoState,
+  type PalmSetup,
+} from "@/lib/demo-store";
+import { exitApp, recordAdvice, resumeCloud } from "@/services/cloud";
 
 import { preparePreview } from "@/services/presentation-preview";
 export const Route = createFileRoute("/home")({
@@ -48,25 +56,55 @@ export function Home() {
   const [readingsOpen, setReadingsOpen] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const obs = getObservation();
-  const rec = getRecommendation();
 
   const refresh = useCallback(() => {
-    setLoad({ state: "loading" });
-    fetchReadings()
-      .then((data) => setLoad({ state: "ready", data }))
-      .catch(() => setLoad({ state: "error" }));
+    const d = loadDemo();
+    const data = d.palm ? snapshotFromSensors(d.sensors, d.palm.id) : null;
+    setLoad(data ? { state: "ready", data } : { state: "error" });
   }, []);
 
   useEffect(() => {
-    const d = preparePreview();
-    if (!d.active) return void navigate({ to: "/" });
-    if (!d.palm) return void navigate({ to: "/connect" });
-    setDemo(d);
-    refresh();
+    let alive = true;
+    const onSync = () => {
+      const d = loadDemo();
+      if (!d.palm) return void navigate({ to: "/connect" });
+      setDemo(d);
+      refresh();
+    };
+    void resumeCloud().then((ok) => {
+      if (!alive) return;
+      if (!ok) return void navigate({ to: "/" });
+      const d = preparePreview();
+      if (!d.active) return void navigate({ to: "/" });
+      if (!d.palm) return void navigate({ to: "/connect" });
+      setDemo(d);
+      refresh();
+      window.addEventListener(SYNC_EVENT, onSync);
+    });
+    return () => {
+      alive = false;
+      window.removeEventListener(SYNC_EVENT, onSync);
+    };
   }, [navigate, refresh]);
 
-  if (!demo?.palm) return null;
+  const latestStage = demo?.palm
+    ? demo.analyses
+        .filter(
+          (a) =>
+            a.status === "completed" &&
+            a.palmId === demo.palm!.id &&
+            a.sampleId === demo.palm!.sampleId &&
+            a.variety === demo.palm!.variety,
+        )
+        .sort((a, b) => Date.parse(b.analyzedAt) - Date.parse(a.analyzedAt))[0]?.stage
+    : undefined;
+  const rec = demo?.palm ? getRecommendation(demo, latestStage) : null;
+  useEffect(() => {
+    if (rec?.advice && rec.readingAt) void recordAdvice(rec.advice, rec.readingAt);
+  }, [rec?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!demo?.palm || !rec) return null;
+  const obs = getObservation(demo);
   const palm = demo.palm;
   const stage =
     demo.analyses
@@ -83,11 +121,12 @@ export function Home() {
   const snap = load.state === "ready" ? load.data : null;
   const live = snap && connected(demo.device) && !isStale(snap);
 
+  const recId = rec.id;
   function confirmDone() {
     const next = saveDemo({
       actions: [
-        ...(demo!.actions || []).filter((a) => a.id !== rec.id),
-        { id: rec.id, at: Date.now() },
+        ...(demo!.actions || []).filter((a) => a.id !== recId),
+        { id: recId, at: Date.now() },
       ],
     });
     setDemo(next);
@@ -282,8 +321,7 @@ export function Home() {
           navigate({ to: "/connect" });
         }}
         onExit={() => {
-          saveDemo({ active: false });
-          navigate({ to: "/" });
+          void exitApp().then(() => navigate({ to: "/" }));
         }}
       />
     </div>
